@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
 import { TMMapping, TMPrediction } from "../types.ts";
-import * as tf from "@tensorflow/tfjs";
-import * as tmImage from "@teachablemachine/image";
 import {
   Camera,
   CameraOff,
@@ -89,74 +87,93 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
     localStorage.setItem("tm_map_thresh", updated.confidenceThreshold.toString());
   };
 
+  // Dynamically inject TF.js + TM Image scripts from CDN (avoids npm peer dep conflicts)
+  const loadTeachableMachineScripts = async (): Promise<boolean> => {
+    if ((window as any).tmImage && (window as any).tf) return true;
+    try {
+      await injectScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js");
+      await injectScript("https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.5/dist/teachablemachine-image.min.js");
+      return true;
+    } catch (e: any) {
+      setErrorMessage("Failed to load TF.js from CDN. Check your internet connection.");
+      console.error(e);
+      return false;
+    }
+  };
+
+  const injectScript = (src: string): Promise<void> =>
+    new Promise((resolve, reject) => {
+      if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+      const s = document.createElement("script");
+      s.src = src; s.async = true;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error(`Failed to load: ${src}`));
+      document.head.appendChild(s);
+    });
+
   // Handle Model Loading
   const handleLoadModel = async () => {
     console.log("🔍 Starting model load...");
 
     let resolvedUrl = modelUrl.trim();
-
     if (resolvedUrl.startsWith("/")) {
       resolvedUrl = `${window.location.origin}${resolvedUrl}`;
     }
-
     const cleanUrl = resolvedUrl.endsWith("/") ? resolvedUrl : `${resolvedUrl}/`;
-
     console.log("🔍 Loading from:", cleanUrl);
 
     setIsLoadingModel(true);
     setErrorMessage(null);
 
     try {
-      // Initialize TensorFlow.js
-      console.log("📦 Initializing TensorFlow.js...");
-      await tf.ready();
-      console.log("✅ TensorFlow.js ready!");
+      // 1. Load CDN scripts
+      const ok = await loadTeachableMachineScripts();
+      if (!ok) { setIsLoadingModel(false); return; }
 
-      const modelJsonURL = `${cleanUrl}model.json`;
-      const metadataJsonURL = `${cleanUrl}metadata.json`;
+      // 2. Verify model files exist
+      const modelRes = await fetch(`${cleanUrl}model.json`);
+      if (!modelRes.ok) throw new Error(`model.json not found at ${cleanUrl} (${modelRes.status})`);
+      const metaRes = await fetch(`${cleanUrl}metadata.json`);
+      if (!metaRes.ok) throw new Error(`metadata.json not found at ${cleanUrl} (${metaRes.status})`);
 
-      console.log("📁 Loading model from:", modelJsonURL);
+      // 3. Stop any running webcam
+      stopWebcam();
 
-      // Load the model
-      const model = await tmImage.load(modelJsonURL, metadataJsonURL);
+      // 4. Load model via tmImage global
+      const tmImageLib = (window as any).tmImage;
+      if (!tmImageLib) throw new Error("Teachable Machine library not available.");
+
+      const model = await tmImageLib.load(`${cleanUrl}model.json`, `${cleanUrl}metadata.json`);
       modelInstanceRef.current = model;
 
-      const labels = model.getClassLabels();
+      const labels: string[] = model.getClassLabels();
       console.log("📊 Model labels:", labels);
       setAvailableClasses(labels);
 
       // Auto-map labels
-      const jumpMatch = labels.find((l: string) => {
+      const jumpMatch = labels.find((l) => {
         const low = l.toLowerCase();
-        return low.includes("jump") || low.includes("up") || low.includes("happy");
-      }) || labels[1] || labels[0];
+        return low.includes("jump") || low.includes("up") || low.includes("happy") || low.includes("arms");
+      }) ?? labels[1] ?? labels[0];
 
-      const crouchMatch = labels.find((l: string) => {
+      const crouchMatch = labels.find((l) => {
         const low = l.toLowerCase();
         return low.includes("crouch") || low.includes("down") || low.includes("duck") || low.includes("sad");
-      }) || labels[2] || labels[0];
+      }) ?? labels[2] ?? labels[0];
 
-      const idleMatch = labels.find((l: string) => {
-        const low = l.toLowerCase();
-        return low.includes("idle") || low.includes("bac") || low.includes("normal") || low.includes("angry");
-      }) || labels.find((l: string) => l !== jumpMatch && l !== crouchMatch) || labels[0];
+      const idleMatch = labels.find((l) =>
+        l !== jumpMatch && l !== crouchMatch
+      ) ?? labels[0];
 
-      const newMaps = {
-        ...mappings,
-        jumpClass: jumpMatch,
-        crouchClass: crouchMatch,
-        idleClass: idleMatch
-      };
-      saveMappings(newMaps);
+      saveMappings({ ...mappings, jumpClass: jumpMatch, crouchClass: crouchMatch, idleClass: idleMatch });
 
       setModelLoaded(true);
       setIsSimulatorActive(false);
       localStorage.setItem("tm_model_url", modelUrl);
-
-      console.log("✅✅ Model loaded successfully! 🎉");
+      console.log("✅ Model loaded! Labels:", labels);
 
     } catch (e: any) {
-      console.error("❌❌ Model load error:", e);
+      console.error("❌ Model load error:", e);
       setErrorMessage(`Could not load model: ${e.message || "Unknown error"}`);
       setModelLoaded(false);
     } finally {
@@ -245,29 +262,25 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
     }
   };
 
-  // Main prediction loop using canvas
+  // Main prediction loop — draws video frame to canvas then predicts
   const runPredictionLoop = () => {
     const loop = async () => {
       const video = videoRef.current;
       const canvas = canvasRef.current;
       const model = modelInstanceRef.current;
 
-      if (video && canvas && model && isCamStarted) {
+      if (video && canvas && model) {
         try {
-          // Draw video frame to canvas
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
+          const ctx = canvas.getContext("2d");
+          if (ctx && video.readyState >= video.HAVE_CURRENT_DATA) {
             ctx.drawImage(video, 0, 0, 224, 224);
-
-            // Predict
-            const predictions = await model.predict(canvas);
-            setPredictions(predictions);
-            evaluatePredictions(predictions);
+            const preds: TMPrediction[] = await model.predict(canvas);
+            setPredictions(preds);
+            evaluatePredictions(preds);
           }
         } catch (e) {
           console.error("Prediction error:", e);
         }
-
         predictionLoopRef.current = requestAnimationFrame(loop);
       }
     };
