@@ -1,13 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
-import { 
-  GameStatus, 
-  PlayerState, 
-  Obstacle, 
-  Coin, 
-  Cloud, 
-  Particle, 
-  ScoreState, 
-  ObstacleType 
+import {
+  GameStatus,
+  PlayerState,
+  Obstacle,
+  Coin,
+  Cloud,
+  Particle,
+  ScoreState,
+  ObstacleType
 } from "../types.ts";
 import { SPRITES, drawPixelArt, ColorScheme } from "./PixelArtwork.ts";
 import { retroAudio } from "../services/retroAudio.ts";
@@ -189,7 +189,7 @@ export const RetroGame: React.FC<RetroGameProps> = ({
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const state = stateRef.current;
-      
+
       // Prevent scrolling
       if (["Space", "ArrowUp", "ArrowDown"].includes(e.code)) {
         e.preventDefault();
@@ -382,7 +382,7 @@ export const RetroGame: React.FC<RetroGameProps> = ({
 
       // 1. Progress Distance and Score
       state.distance += 0.15;
-      
+
       // Calculate Score continuously
       const scoreGain = Math.floor(state.distance) + (state.coinsCollected * 100);
       state.score = scoreGain;
@@ -430,7 +430,7 @@ export const RetroGame: React.FC<RetroGameProps> = ({
       if (state.player.y >= groundY) {
         state.player.y = groundY;
         state.player.vy = 0;
-        
+
         // Recover to running state if previously jumping
         if (state.player.state === "JUMPING") {
           state.player.state = state.crouchPressed ? "CROUCHING" : "RUNNING";
@@ -466,7 +466,7 @@ export const RetroGame: React.FC<RetroGameProps> = ({
       // 6. Spawn Obstacles
       const maxObstacles = 3;
       const minDistanceBetweenObstacles = 280 + (state.gameSpeed * 10);
-      
+
       let lastObstacleX = canvas.width;
       if (state.obstacles.length > 0) {
         lastObstacleX = Math.max(...state.obstacles.map(o => o.x));
@@ -475,7 +475,7 @@ export const RetroGame: React.FC<RetroGameProps> = ({
       if (state.obstacles.length < maxObstacles && lastObstacleX < canvas.width - minDistanceBetweenObstacles) {
         if (Math.random() < 0.015) {
           const types: ObstacleType[] = ["CACTUS_SMALL", "CACTUS_LARGE", "CACTUS_DOUBLE"];
-          
+
           // Bird starts spawning only after score of 400
           if (state.score > 400) {
             types.push("BIRD");
@@ -646,12 +646,12 @@ export const RetroGame: React.FC<RetroGameProps> = ({
       // Draw Parallax Clouds
       state.clouds.forEach(cloud => {
         drawPixelArt(
-          ctx, 
-          cloud.x, 
-          cloud.y, 
-          SPRITES.CLOUD, 
+          ctx,
+          cloud.x,
+          cloud.y,
+          SPRITES.CLOUD,
           1.5, // cloud pixel sizing
-          themeColors, 
+          themeColors,
           "cloud"
         );
       });
@@ -814,7 +814,7 @@ export const RetroGame: React.FC<RetroGameProps> = ({
       ctx.font = "8px 'Press Start 2P', monospace";
       ctx.fillStyle = "#555555";
       ctx.fillText("PRESS JUMP (SPACE / W) OR CLICK TO BEGIN", canvas.width / 2, canvas.height / 2 + 15);
-      
+
       ctx.font = "8px 'Press Start 2P', monospace";
       ctx.fillStyle = "#888888";
       ctx.fillText("SYNC TEACHABLE MODEL IN PRIVATE EMBED TO LEAP", canvas.width / 2, canvas.height / 2 + 38);
@@ -829,7 +829,7 @@ export const RetroGame: React.FC<RetroGameProps> = ({
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       ctx.font = "16px 'Press Start 2P', monospace";
-      ctx.fillStyle = "#ef4444"; 
+      ctx.fillStyle = "#ef4444";
       ctx.textAlign = "center";
       ctx.fillText("G A M E  O V E R", canvas.width / 2, canvas.height / 2 - 20);
 
@@ -896,7 +896,7 @@ export const RetroGame: React.FC<RetroGameProps> = ({
       </div>
 
       {/* Render Canvas Frame Container */}
-      <div 
+      <div
         ref={containerRef}
         onClick={handleCanvasClick}
         className="relative w-full overflow-hidden bg-[#fdfdfd] border-x-2 border-b-2 border-black cursor-pointer select-none group"

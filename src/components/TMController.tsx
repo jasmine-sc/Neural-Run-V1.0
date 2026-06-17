@@ -1,18 +1,17 @@
 import React, { useState, useEffect, useRef } from "react";
 import { TMMapping, TMPrediction } from "../types.ts";
-import { 
-  Camera, 
-  CameraOff, 
-  Link2, 
-  Sliders, 
-  Play, 
-  Info, 
-  Tv, 
-  RefreshCcw, 
-  HelpCircle,
+import * as tf from "@tensorflow/tfjs";
+import * as tmImage from "@teachablemachine/image";
+import {
+  Camera,
+  CameraOff,
+  Link2,
+  Sliders,
+  Play,
+  Info,
+  Tv,
+  RefreshCcw,
   AlertCircle,
-  CheckCircle,
-  HelpCircle as QuestionIcon
 } from "lucide-react";
 
 interface TMControllerProps {
@@ -23,16 +22,25 @@ interface TMControllerProps {
 const INITIAL_CLASSES = ["Idle Background", "Arms Up (Jump)", "Ducking (Crouch)"];
 
 export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered }) => {
-  // Model Setup State
-  const [modelUrl, setModelUrl] = useState<string>(
-    localStorage.getItem("tm_model_url") || "https://teachablemachine.withgoogle.com/models/m3b4l0u4r/"
-  );
-  const [isScriptsLoaded, setIsScriptsLoaded] = useState<boolean>(false);
+  const [modelUrl, setModelUrl] = useState<string>(() => {
+    const saved = localStorage.getItem("tm_model_url");
+    if (!saved) {
+      return "/model/";
+    }
+    const oldUrls = [
+      "https://teachablemachine.withgoogle.com/models/m3b4l0u4r/",
+      "https://teachablemachine.withgoogle.com/models/p_CDW2Zrr/",
+      "https://teachablemachine.withgoogle.com/models/ysnpud50xC/"
+    ];
+    if (oldUrls.includes(saved)) {
+      return "/model/";
+    }
+    return saved;
+  });
   const [isLoadingModel, setIsLoadingModel] = useState<boolean>(false);
-  const [modelType, setModelType] = useState<"image" | "pose">("image");
   const [modelLoaded, setModelLoaded] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  
+
   // Webcam & Loop State
   const [isCamStarted, setIsCamStarted] = useState<boolean>(false);
   const [availableClasses, setAvailableClasses] = useState<string[]>(INITIAL_CLASSES);
@@ -42,7 +50,7 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
 
   // Mappings
   const [mappings, setMappings] = useState<TMMapping>({
-    jumpClass: INITIAL_CLASSES[1], 
+    jumpClass: INITIAL_CLASSES[1],
     crouchClass: INITIAL_CLASSES[2],
     idleClass: INITIAL_CLASSES[0],
     confidenceThreshold: 0.82
@@ -50,8 +58,9 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
 
   // Dynamic Elements Refs
   const webcamContainerRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const predictionLoopRef = useRef<number | null>(null);
-  const webcamInstanceRef = useRef<any>(null);
   const modelInstanceRef = useRef<any>(null);
 
   // Load Saved parameters
@@ -80,88 +89,57 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
     localStorage.setItem("tm_map_thresh", updated.confidenceThreshold.toString());
   };
 
-  // Helper code to dynamically inject External Teachable Machine Scripts
-  // This completely eliminates React 19 / Vite bundler compatibility conflicts.
-  const loadTeachableMachineScripts = async (): Promise<boolean> => {
-    if ((window as any).tmImage && (window as any).tf) {
-      setIsScriptsLoaded(true);
-      return true;
-    }
-
-    try {
-      setErrorMessage(null);
-      // Load TFJS first
-      await injectScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0/dist/tf.min.js");
-      // Load TM Image next
-      await injectScript("https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.3/dist/teachablemachine-image.min.js");
-      
-      setIsScriptsLoaded(true);
-      return true;
-    } catch (e: any) {
-      setErrorMessage("Network failed to retrieve TensorFlow CDN. Keep using manual simulator panels.");
-      console.error(e);
-      return false;
-    }
-  };
-
-  const injectScript = (src: string): Promise<void> => {
-    return new Promise((resolve, reject) => {
-      const existing = document.querySelector(`script[src="${src}"]`);
-      if (existing) {
-        resolve();
-        return;
-      }
-      const script = document.createElement("script");
-      script.src = src;
-      script.async = true;
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error(`Failed to load dependency: ${src}`));
-      document.head.appendChild(script);
-    });
-  };
-
   // Handle Model Loading
   const handleLoadModel = async () => {
-    if (!modelUrl.trim()) {
-      setErrorMessage("Please enter a valid Teachable Machine Model URL");
-      return;
+    console.log("🔍 Starting model load...");
+
+    let resolvedUrl = modelUrl.trim();
+
+    if (resolvedUrl.startsWith("/")) {
+      resolvedUrl = `${window.location.origin}${resolvedUrl}`;
     }
 
-    const cleanUrl = modelUrl.trim().endsWith("/") ? modelUrl.trim() : `${modelUrl.trim()}/`;
+    const cleanUrl = resolvedUrl.endsWith("/") ? resolvedUrl : `${resolvedUrl}/`;
+
+    console.log("🔍 Loading from:", cleanUrl);
+
     setIsLoadingModel(true);
     setErrorMessage(null);
 
     try {
-      // 1. Ensure scripts are fully loaded
-      const ok = await loadTeachableMachineScripts();
-      if (!ok) {
-        setIsLoadingModel(false);
-        return;
-      }
+      // Initialize TensorFlow.js
+      console.log("📦 Initializing TensorFlow.js...");
+      await tf.ready();
+      console.log("✅ TensorFlow.js ready!");
 
-      // 2. Clear old state
-      stopWebcam();
-
-      // 3. Request TM to load model
       const modelJsonURL = `${cleanUrl}model.json`;
       const metadataJsonURL = `${cleanUrl}metadata.json`;
-      
-      const tmImage = (window as any).tmImage;
-      if (!tmImage) {
-        throw new Error("Teachable Machine library not present in global namespace.");
-      }
 
+      console.log("📁 Loading model from:", modelJsonURL);
+
+      // Load the model
       const model = await tmImage.load(modelJsonURL, metadataJsonURL);
       modelInstanceRef.current = model;
 
-      // 4. Retrieve categories
       const labels = model.getClassLabels();
+      console.log("📊 Model labels:", labels);
       setAvailableClasses(labels);
-      
-      // Attempt smart auto-prediction matches!
-      const jumpMatch = labels.find((l: string) => l.toLowerCase().includes("jump") || l.toLowerCase().includes("up")) || labels[1] || labels[0];
-      const crouchMatch = labels.find((l: string) => l.toLowerCase().includes("crouch") || l.toLowerCase().includes("down") || l.toLowerCase().includes("duck")) || labels[2] || labels[0];
-      const idleMatch = labels.find((l: string) => l.toLowerCase().includes("idle") || l.toLowerCase().includes("bac") || l.toLowerCase().includes("normal")) || labels[0];
+
+      // Auto-map labels
+      const jumpMatch = labels.find((l: string) => {
+        const low = l.toLowerCase();
+        return low.includes("jump") || low.includes("up") || low.includes("happy");
+      }) || labels[1] || labels[0];
+
+      const crouchMatch = labels.find((l: string) => {
+        const low = l.toLowerCase();
+        return low.includes("crouch") || low.includes("down") || low.includes("duck") || low.includes("sad");
+      }) || labels[2] || labels[0];
+
+      const idleMatch = labels.find((l: string) => {
+        const low = l.toLowerCase();
+        return low.includes("idle") || low.includes("bac") || low.includes("normal") || low.includes("angry");
+      }) || labels.find((l: string) => l !== jumpMatch && l !== crouchMatch) || labels[0];
 
       const newMaps = {
         ...mappings,
@@ -172,17 +150,35 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
       saveMappings(newMaps);
 
       setModelLoaded(true);
-      setIsSimulatorActive(false); // prompt them with webcam since they have a real model
+      setIsSimulatorActive(false);
       localStorage.setItem("tm_model_url", modelUrl);
+
+      console.log("✅✅ Model loaded successfully! 🎉");
+
     } catch (e: any) {
-      console.error(e);
-      setErrorMessage("Could not load model files. Verify the URL is correct and public on Teachable Machine.");
+      console.error("❌❌ Model load error:", e);
+      setErrorMessage(`Could not load model: ${e.message || "Unknown error"}`);
+      setModelLoaded(false);
     } finally {
       setIsLoadingModel(false);
     }
   };
 
-  // Start Webcam and classification loop
+  // Auto-load model on mount
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      handleLoadModel();
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Retry loading
+  const retryLoadModel = () => {
+    handleLoadModel();
+  };
+
+  // Start Webcam using getUserMedia directly
   const startWebcam = async () => {
     if (!modelLoaded || !modelInstanceRef.current) {
       setErrorMessage("Please load a Teachable Machine model first!");
@@ -190,48 +186,87 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
     }
 
     setErrorMessage(null);
-    setIsCamStarted(true);
 
     try {
-      const tmImage = (window as any).tmImage;
-      const size = 180;
-      
-      // Create new webcam wrapper instance
-      const webcam = new tmImage.Webcam(size, size, true); // width, height, flip active
-      await webcam.setup(); // prompt permissions
-      await webcam.play();
-      webcamInstanceRef.current = webcam;
+      // Create video element
+      const video = document.createElement('video');
+      video.setAttribute('autoplay', '');
+      video.setAttribute('playsinline', '');
+      video.style.width = '100%';
+      video.style.height = '100%';
+      video.style.objectFit = 'cover';
 
-      // Append standard canvas inside container
+      // Get user media
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'user',
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        },
+        audio: false
+      });
+
+      video.srcObject = stream;
+      await video.play();
+
+      videoRef.current = video;
+
+      // Create canvas for predictions
+      const canvas = document.createElement('canvas');
+      canvas.width = 224;
+      canvas.height = 224;
+      canvas.style.display = 'none';
+      canvasRef.current = canvas;
+
+      // Add video to container
       if (webcamContainerRef.current) {
-        webcamContainerRef.current.innerHTML = "";
-        webcamContainerRef.current.appendChild(webcam.canvas);
+        webcamContainerRef.current.innerHTML = '';
+        webcamContainerRef.current.appendChild(video);
       }
 
-      // Enter classification update loop!
+      setIsCamStarted(true);
+      console.log("📷 Camera started successfully!");
+
+      // Start prediction loop
       runPredictionLoop();
+
     } catch (e: any) {
-      console.error(e);
-      setErrorMessage("Could not start webcam camera inside this iFrame. Check browser permission blocks, or use the Simulator below.");
+      console.error("❌ Camera error:", e);
+
+      if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+        setErrorMessage("Camera access denied. Please allow camera access in your browser settings.");
+      } else if (e.name === 'NotFoundError' || e.name === 'DevicesNotFoundError') {
+        setErrorMessage("No camera found. Please connect a webcam.");
+      } else {
+        setErrorMessage(`Could not start webcam: ${e.message || "Unknown error"}`);
+      }
+
       setIsCamStarted(false);
     }
   };
 
-  // Main camera polling classification loop
+  // Main prediction loop using canvas
   const runPredictionLoop = () => {
     const loop = async () => {
-      const webcam = webcamInstanceRef.current;
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
       const model = modelInstanceRef.current;
 
-      if (webcam && model && isCamStarted) {
-        webcam.update(); // read latest video feed
-        
-        // Predict
-        const list: TMPrediction[] = await model.predict(webcam.canvas);
-        setPredictions(list);
+      if (video && canvas && model && isCamStarted) {
+        try {
+          // Draw video frame to canvas
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(video, 0, 0, 224, 224);
 
-        // Map confidence outputs to jump/crouch action triggers
-        evaluatePredictions(list);
+            // Predict
+            const predictions = await model.predict(canvas);
+            setPredictions(predictions);
+            evaluatePredictions(predictions);
+          }
+        } catch (e) {
+          console.error("Prediction error:", e);
+        }
 
         predictionLoopRef.current = requestAnimationFrame(loop);
       }
@@ -243,18 +278,14 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
   const evaluatePredictions = (preds: TMPrediction[]) => {
     if (preds.length === 0) return;
 
-    // Retrieve active scores
     const jumpPred = preds.find(p => p.className === mappings.jumpClass);
     const crouchPred = preds.find(p => p.className === mappings.crouchClass);
-    const idlePred = preds.find(p => p.className === mappings.idleClass);
 
     const jumpProb = jumpPred ? jumpPred.probability : 0;
     const crouchProb = crouchPred ? crouchPred.probability : 0;
-    const idleProb = idlePred ? idlePred.probability : 0;
 
     let targetAction: "jump" | "crouch" | "idle" = "idle";
 
-    // Trigger action only if probability exceeds custom confidence threshold
     if (jumpProb >= mappings.confidenceThreshold && jumpProb > crouchProb) {
       targetAction = "jump";
     } else if (crouchProb >= mappings.confidenceThreshold && crouchProb > jumpProb) {
@@ -269,22 +300,23 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
 
   const stopWebcam = () => {
     setIsCamStarted(false);
-    
+
     if (predictionLoopRef.current) {
       cancelAnimationFrame(predictionLoopRef.current);
       predictionLoopRef.current = null;
     }
 
-    if (webcamInstanceRef.current) {
-      try {
-        webcamInstanceRef.current.stop();
-      } catch (e) {}
-      webcamInstanceRef.current = null;
+    // Stop all tracks
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+      videoRef.current.srcObject = null;
     }
 
     if (webcamContainerRef.current) {
       webcamContainerRef.current.innerHTML = "";
     }
+
     setDetectedAction("idle");
     onActionTriggered("idle");
   };
@@ -294,7 +326,6 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
     setDetectedAction(action);
     onActionTriggered(action);
 
-    // generate fake predictions to feed visual confidence indicators
     const simulatedPreds = availableClasses.map((className) => {
       let probability = 0.05;
       if (action === "jump" && className === mappings.jumpClass) probability = 0.98;
@@ -307,12 +338,11 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
     setPredictions(simulatedPreds);
   };
 
-  // Keyboard binding inside App to allow developers to trigger actions easily
+  // Keyboard binding
   useEffect(() => {
     if (!isSimulatorActive) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Simulate triggers if they are typing inside mapping input blocks
       if (document.activeElement?.tagName === "INPUT") return;
 
       if (e.code === "KeyW" || e.code === "KeyI") {
@@ -353,16 +383,15 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
             <Camera className="w-4 h-4 text-black shrink-0" />
             <h2 className="font-mono text-xs font-bold uppercase tracking-wider text-black">WEB MODEL FEED</h2>
           </div>
-          <span className={`text-[9px] uppercase font-bold py-1 px-2.5 border border-black flex items-center gap-1.5 ${
-            isSimulatorActive 
-              ? "bg-gray-100 text-gray-900" 
-              : "bg-black text-white"
-          }`}>
+          <span className={`text-[9px] uppercase font-bold py-1 px-2.5 border border-black flex items-center gap-1.5 ${isSimulatorActive
+            ? "bg-gray-100 text-gray-900"
+            : "bg-black text-white"
+            }`}>
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
             {isSimulatorActive ? "SIMULATOR MANUAL" : "AI CAMERA ACTIVE"}
           </span>
         </div>
- 
+
         {/* Dynamic Warning Alert Messages */}
         {errorMessage && (
           <div className="mb-4 bg-red-50 border border-red-300 text-red-900 text-xs p-3.5 flex items-start gap-2.5">
@@ -370,10 +399,16 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
             <div className="flex-1">
               <p className="font-bold uppercase text-[10px] font-mono mb-0.5 tracking-wider">Warning Advisory:</p>
               <p className="text-red-800 leading-relaxed">{errorMessage}</p>
+              <button
+                onClick={retryLoadModel}
+                className="mt-2 px-3 py-1 bg-black text-white text-[9px] font-mono uppercase tracking-wider hover:bg-gray-800 transition-colors"
+              >
+                Retry Loading
+              </button>
             </div>
           </div>
         )}
- 
+
         {/* Model Link Setup */}
         <div className="mb-5 bg-gray-50 border-2 border-black p-4">
           <label className="block text-gray-900 text-xs font-mono font-bold uppercase mb-2 flex items-center gap-1.5">
@@ -382,10 +417,10 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
           </label>
           <div className="flex gap-2">
             <input
-              type="url"
+              type="text"
               value={modelUrl}
               onChange={(e) => setModelUrl(e.target.value)}
-              placeholder="https://teachablemachine.withgoogle.com/models/..."
+              placeholder="/model/ or https://teachablemachine.withgoogle.com/models/..."
               className="flex-1 min-w-0 bg-white border border-gray-350 focus:border-black px-3 py-1.5 text-xs text-black placeholder-gray-400 outline-none transition-all font-mono"
               id="tm_url_input"
             />
@@ -409,10 +444,11 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
             </button>
           </div>
           <p className="mt-2 text-[10px] text-gray-500 font-mono flex items-center gap-1.5">
-            <Info className="w-3 h-3 text-gray-700" /> Model URL must contain TensorFlowJS classifications.
+            <Info className="w-3 h-3 text-gray-700" />
+            Model URL must contain TensorFlowJS classifications. For local models use: <span className="bg-gray-200 px-1 py-0.5 font-bold">/model/</span>
           </p>
         </div>
- 
+
         {/* Controller Action Mapper Panel */}
         <div className="mb-5">
           <div className="flex items-center justify-between mb-3.5">
@@ -420,14 +456,14 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
               <Sliders className="w-4 h-4 text-black" />
               <span>Input Mapping Calibration</span>
             </h3>
-            <button 
+            <button
               onClick={() => setIsSimulatorActive(!isSimulatorActive)}
               className="text-[9px] uppercase font-bold tracking-widest text-gray-500 hover:text-black underline cursor-pointer font-mono"
             >
               Set {isSimulatorActive ? "Camera Control" : "Sim Emulator"}
             </button>
           </div>
- 
+
           <div className="space-y-3 bg-gray-50 border-2 border-black p-4">
             {/* Dynamic Jump mapping selector */}
             <div className="flex items-center justify-between gap-4">
@@ -438,12 +474,12 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
                 className="bg-white border border-gray-350 focus:border-black px-2 py-1 text-xs text-black outline-none font-semibold w-44 rounded-none cursor-pointer"
                 id="map_jump_select"
               >
-                {availableClasses.map(lbl => (
+                {availableClasses.map((lbl) => (
                   <option key={lbl} value={lbl}>{lbl}</option>
                 ))}
               </select>
             </div>
- 
+
             {/* Dynamic Crouch mapping selector */}
             <div className="flex items-center justify-between gap-4">
               <span className="text-xs uppercase font-mono font-bold text-gray-900">↓ CROUCH Trigger:</span>
@@ -453,12 +489,12 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
                 className="bg-white border border-gray-350 focus:border-black px-2 py-1 text-xs text-black outline-none font-semibold w-44 rounded-none cursor-pointer"
                 id="map_crouch_select"
               >
-                {availableClasses.map(lbl => (
+                {availableClasses.map((lbl) => (
                   <option key={lbl} value={lbl}>{lbl}</option>
                 ))}
               </select>
             </div>
- 
+
             {/* Dynamic Idle mapping selector */}
             <div className="flex items-center justify-between gap-4">
               <span className="text-xs uppercase font-mono font-bold text-gray-500">O IDLE Background:</span>
@@ -468,12 +504,12 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
                 className="bg-white border border-gray-350 focus:border-black px-2 py-1 text-xs text-black outline-none font-semibold w-46 rounded-none cursor-pointer"
                 id="map_idle_select"
               >
-                {availableClasses.map(lbl => (
+                {availableClasses.map((lbl) => (
                   <option key={lbl} value={lbl}>{lbl}</option>
                 ))}
               </select>
             </div>
- 
+
             {/* Confidence Threshold Slider */}
             <div className="pt-3 border-t border-gray-250">
               <div className="flex justify-between text-xs font-mono font-bold mb-1 uppercase tracking-wider text-gray-700">
@@ -494,51 +530,54 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
           </div>
         </div>
       </div>
- 
+
       {/* Camera Live Feed & Signal predictions indicator */}
       <div className="bg-gray-50 p-4 border-2 border-black flex flex-col md:flex-row items-center gap-4">
         {/* Play Webcam feed container */}
-        <div className="relative w-[110px] h-[110px] border-2 border-dashed border-gray-400 rounded-none flex items-center justify-center shrink-0 overflow-hidden bg-white">
+        <div className="relative w-[160px] h-[160px] border-2 border-black bg-black flex items-center justify-center shrink-0 overflow-hidden">
           {/* Webcam dynamic mount point */}
-          <div ref={webcamContainerRef} className="absolute inset-0 w-full h-full [&>canvas]:object-cover [&>canvas]:w-full [&>canvas]:h-full" />
- 
+          <div
+            ref={webcamContainerRef}
+            className="absolute inset-0 w-full h-full"
+          />
+
           {/* Webcam activation switches representation */}
           {!isCamStarted ? (
             <button
               onClick={startWebcam}
               disabled={!modelLoaded && !isSimulatorActive}
-              className="absolute inset-0 flex flex-col items-center justify-center gap-1 cursor-pointer hover:bg-gray-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed group text-gray-500 hover:text-black font-sans"
+              className="absolute inset-0 flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-gray-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed group bg-black/80 text-white z-10"
               id="start_cam_btn"
             >
-              <Camera className="w-5 h-5 text-gray-400 group-hover:text-black transition-colors" />
-              <span className="text-[8px] text-center px-1 font-mono font-bold tracking-wider">START CAMERA</span>
+              <Camera className="w-8 h-8 text-white group-hover:scale-110 transition-transform" />
+              <span className="text-[10px] text-center px-2 font-mono font-bold tracking-wider uppercase">Start Camera</span>
             </button>
           ) : (
             <button
               onClick={stopWebcam}
-              className="absolute bottom-1 right-1 p-1 bg-black hover:bg-gray-800 text-white rounded-none cursor-pointer transition-colors z-10 border border-black"
+              className="absolute bottom-2 right-2 p-1.5 bg-red-600 hover:bg-red-700 text-white rounded-none cursor-pointer transition-colors z-10 border-2 border-white"
               title="Stop Webcam"
               id="stop_cam_btn"
             >
-              <CameraOff className="w-3.5 h-3.5" />
+              <CameraOff className="w-4 h-4" />
             </button>
           )}
         </div>
- 
+
         {/* Realtime Classification Progress Bars */}
         <div className="flex-1 w-full space-y-2.5">
           <div className="text-[9px] font-mono uppercase font-black text-gray-900 tracking-wider">GESTURE PREDICT INDICES:</div>
-          
+
           {availableClasses.map((className) => {
-            const pred = predictions.find(p => p.className === className);
+            const pred = predictions.find((p) => p.className === className);
             const prob = pred ? pred.probability : 0.05;
             const percentage = prob * 100;
- 
+
             let barColor = "bg-gray-400";
             if (className === mappings.jumpClass) barColor = "bg-emerald-600";
             else if (className === mappings.crouchClass) barColor = "bg-rose-500";
             else if (className === mappings.idleClass) barColor = "bg-gray-850";
- 
+
             return (
               <div key={className} className="space-y-1">
                 <div className="flex justify-between text-[11px] font-mono select-none">
@@ -547,13 +586,13 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
                     {className === mappings.crouchClass && "↓ "}
                     {className}
                   </span>
-                  <span className={prob >= mappings.confidenceThreshold ? "text-black font-black font-monoUnder" : "text-gray-500 font-mono"}>
+                  <span className={prob >= mappings.confidenceThreshold ? "text-black font-black" : "text-gray-500 font-mono"}>
                     {percentage.toFixed(0)}%
                   </span>
                 </div>
                 <div className="w-full bg-white border border-gray-350 h-2.5 overflow-hidden rounded-none">
-                  <div 
-                    className={`h-full transition-all duration-75 ${barColor}`} 
+                  <div
+                    className={`h-full transition-all duration-75 ${barColor}`}
                     style={{ width: `${percentage}%` }}
                   />
                 </div>
@@ -562,8 +601,8 @@ export const TMController: React.FC<TMControllerProps> = ({ onActionTriggered })
           })}
         </div>
       </div>
- 
-      {/* Manual Virtual Emulator controls (always active for fallback/testing) */}
+
+      {/* Manual Virtual Emulator controls */}
       {isSimulatorActive && (
         <div className="mt-4 pt-3.5 border-t-2 border-black">
           <div className="bg-black text-white p-3.5 rounded-none border-2 border-black">
