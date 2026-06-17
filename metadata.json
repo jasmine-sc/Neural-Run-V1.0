@@ -1,0 +1,10 @@
+{
+  "name": "Teachable Machine Platformer",
+  "description": "An 8-bit retro endless runner inspired by the Google offline dino game, powered by Teachable Machine webcam gestures for jumping and crouching.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,36 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-retro: "Press Start 2P", monospace;
+  --font-vt: "VT323", monospace;
+}
+
+@layer utilities {
+  .pixelated {
+    image-rendering: pixelated;
+  }
+}
+
+/* Clean Minimalism body and scrollbar customization */
+body {
+  background-color: #fdfdfd;
+  color: #111111;
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+}
+
+/* Custom retro styling enhancements */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+  background: #111111;
+  border-radius: 3px;
+}
+
